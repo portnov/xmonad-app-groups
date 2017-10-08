@@ -1,0 +1,285 @@
+{-# LANGUAGE ExistentialQuantification, TypeSynonymInstances, FlexibleInstances, DeriveDataTypeable, PatternGuards, ViewPatterns #-}
+
+-- | Applications group is defined by set of conditions for windows.
+-- This module allows to define ManageHooks and keyboard shortcuts
+-- for applications group in one place. Moreover, one can associate an `action'
+-- with a group. This action is run instead of switching to group, in case there are
+-- no opened windows of group at this moment.
+
+module XMonad.AppGroups
+  (Key, App, AppsConfig (..), Condition (..), Cond (..),
+   group, on, full, float,
+   nofocus, named, orSpawn, orRun,
+   (~>), (~>>),
+   fromGroups,
+   doFullscreen, query,
+   oneOf, allOf, apps2hooks, apps2keys,
+   selectAppGroup, switchToApp, selectWorkspaceOn)
+  where
+
+import Control.Monad
+import Data.Maybe
+import Data.Monoid
+
+import XMonad hiding (float)
+import qualified XMonad
+import qualified XMonad.StackSet as W
+
+import XMonad.Actions.GridSelect
+import XMonad.Actions.OnScreen
+import XMonad.Layout.Minimize
+import XMonad.Util.WindowProperties
+import XMonad.Util.WindowPropertiesRE
+import XMonad.Util.NamedWindows
+import XMonad.Hooks.ManageHelpers hiding (C)
+
+import XMonad.Utils
+
+-- | Anything that can be turned into @Query@ is a condition.
+class Condition c where
+  toQuery :: c -> Query Bool
+
+-- | In case just a string is used as condition, we assume that this string
+-- must be in window class string.
+instance Condition String where
+  toQuery s = className =? s
+
+instance Condition Property where
+  toQuery p = propertyToQuery p
+
+instance Condition PropertyRE where
+  toQuery (RE p) = propertyToQueryRE p
+
+-- | Keyboard shortcut
+type Key = String
+
+-- | List of application groups
+data AppsConfig = AppsConfig {
+    appsList :: [App],
+    windowsGSC :: GSConfig Window,
+    appsGSC :: GSConfig App,
+    workspacesGSC :: GSConfig WorkspaceId,
+    workspacesMapping :: [(WorkspaceId, ScreenId)] }
+
+-- | Application group configuration
+data App = App {
+     hotkey :: Maybe Key     -- ^ Keyboard shortcut to switch to this group
+   , action  :: X ()         -- ^ Action to be run when there are no windows in group
+   , conditions :: Conds     -- ^ Conditions define which windows are included into group
+   , makeFullscreen :: Bool  -- ^ Fullscreen
+   , makeFloat :: Bool       -- ^ Whether windows must be made floating
+   , noFocus :: Bool
+   , moveToWksp :: Maybe WorkspaceId -- ^ Specify workspace
+   , jumpToWksp :: Bool
+   , shortName :: Maybe String -- ^ Group short name
+}
+
+-- | Container type for any condition
+data Cond = forall c. Condition c => C c
+
+-- | List of conditions
+type Conds = [Cond]
+
+{-
+EDSL для описания групп приложений
+----------------------------------
+
+Описывать группы приложений с использованием непосредственно конструктора +App+
+и record syntax длинно, неудобно и не наглядно. Поэтому ниже определяем набор
+комбинаторов для конструирования значений типа +App+.
+
+Начальное значение. Определяет только набор условий на окна.
+-}
+
+-- | Initial value. Defines only window matching conditions.
+group :: Conds -> App
+group conds = App {
+  hotkey = Nothing,
+  action = return (),
+  conditions = conds,
+  makeFullscreen = False,
+  makeFloat = False,
+  noFocus = False,
+  moveToWksp = Nothing,
+  jumpToWksp = False,
+  shortName = Nothing }
+
+-- | Associate keyboard shortcut with a group.
+on :: App -> Key -> App
+on app key = app {hotkey = Just key}
+
+-- | `Or spawn'. Constructs a group from set of conditions and a command to be run
+-- when there is no such windows.
+orSpawn :: Conds -> String -> App
+orSpawn conds command = (group conds) {action = spawn command}
+
+-- | `Or run'. Analogous to @orSpawn@, but for any @X@ action.
+orRun :: Conds -> X () -> App
+orRun conds x = (group conds) {action = x} 
+
+-- | Says that windows of this group are to be made fullscreen.
+full :: App -> App
+full app = app {makeFullscreen = True}
+
+-- | Says that windows of this group are to be made floating.
+float :: App -> App
+float app = app {makeFloat = True}
+
+nofocus :: App -> App
+nofocus app = app {noFocus = True}
+
+-- | Sets the short name for group.
+named :: App -> String -> App
+named app name = app {shortName = Just name}
+
+-- | Windows of this group are to be opened on specified workspace.
+(~>) :: App -> WorkspaceId -> App
+app ~> wksp = app {moveToWksp = Just wksp}
+
+(~>>) :: App -> WorkspaceId -> App
+app ~>> wksp = app {moveToWksp = Just wksp, jumpToWksp = True}
+
+-- Утилиты
+
+fromGroups :: [[WorkspaceId]] -> [(WorkspaceId, ScreenId)]
+fromGroups lists = concat $ zipWith toPairs lists [0..]
+  where
+    toPairs list i = [(wksp, i) | wksp <- list]
+
+-- | Make window floating and fullscreen.
+doFullscreen :: ManageHook
+doFullscreen = fromWindowOp (withDisplay . fullscreen)
+    where
+      fullscreen :: Window -> Display -> X ()
+      fullscreen w d = let wd = widthOfScreen s
+                           ht = heightOfScreen s
+                           s = defaultScreenOfDisplay d
+                        in do XMonad.float w
+                              io $ resizeWindow d w wd ht
+
+-- | Similar to @or@.
+oneOf :: [Query Bool] -> Query Bool
+oneOf list = foldl1 (<||>) list
+
+-- | Similar to @and@.
+allOf :: [Query Bool] -> Query Bool
+allOf list = foldl1 (<&&>) list
+
+-- | Returns @True@, if the window is not transient.
+isNotTransient :: Query Bool
+isNotTransient = do
+  mbw <- transientTo
+  case mbw of
+    Nothing -> return True
+    Just _  -> return False
+
+query :: App -> Query Bool
+query app = isNotTransient <&&> oneOf [toQuery c | (C c) <- conditions app]
+
+appHook :: Maybe ScreenId -> App -> MaybeManageHook
+appHook mbSID app = query app -?> mconcat $ [
+                              whenH (makeFloat app)      doFloat,
+                              whenH (makeFullscreen app) doFullscreen, 
+                              whenJustH (moveToWksp app) (createAndMove (jumpToWksp app) mbSID) ]
+
+-- | Group name.
+groupName :: App -> String
+groupName app
+        | Just name <- shortName app  = name
+        | Just wksp <- moveToWksp app = wksp
+        | otherwise                   = "unknown"
+ 
+apps2hooks :: AppsConfig -> [MaybeManageHook]
+apps2hooks apps = map hook (appsList apps)
+   where hook app = appHook (scr app) app
+         scr app = moveToWksp app >>= flip lookup (workspacesMapping apps)
+
+{-
+Список привязок сочетаний клавиш.
+Каждая комбинация клавиш будет переключать к одному из окон соответствующей
+группы (окна выбираются с помощью +X.A.GridSelect+), или запускать связанное
+с группой действие, если подходящих окон нет.
+-}
+
+-- | Hotkeys list.
+apps2keys :: AppsConfig -> [(String, X ())]
+apps2keys apps = mapMaybe getHotkey (appsList apps)
+  where
+    getHotkey app
+      | Just key <- hotkey app = Just (key, selectWithQuery apps (query app) (action app))
+      | otherwise              = Nothing
+
+isVisible :: Window -> X Bool
+isVisible w =  withWindowSet $ \ws -> do
+    let maybeStacks = map W.stack $ map W.workspace $ W.screens ws
+    return $ any good maybeStacks
+  where good Nothing              = False
+        good (Just (W.Stack t l r)) = w `elem` (t: l ++ r)
+
+myFocus :: AppsConfig -> Window -> X ()
+myFocus apps w = do
+  visible <- isVisible w
+  if visible
+    then focus w
+    else withWindowSet $ \ws -> do
+           whenJust (W.findTag w ws) $ \wksp -> do
+             let sid = fromMaybe (W.screen $ W.current ws) $ lookup wksp (workspacesMapping apps)
+             targetWksp <- screenWorkspace sid
+             whenJust targetWksp (windows . W.view)
+             focus w
+
+-- | Select windows from ones matching the query (using @X.A.GridSelect@),
+-- or run specified action if there are no such windows.
+selectWithQuery :: AppsConfig -> Query Bool -> X () -> X ()
+selectWithQuery apps qry run = do
+    wins <- matchingWindows qry
+    case wins of
+      [] -> run
+      [w] -> myFocus apps w
+      _ -> do
+          titles <- mapM windowTitle wins
+          selected <- gridselect (windowsGSC apps) $ zip titles wins
+          whenJust selected $ \w -> do
+             myFocus apps w
+             sendMessage (RestoreMinimizedWin w)
+  where
+    windowTitle w = show `fmap` getName w
+
+-- | Select application group: switch to one of windows of group or execute an action.
+selectAppGroup :: AppsConfig -> X ()
+selectAppGroup apps = do
+    nonempty <- filterM isNotEmpty (appsList apps)
+    let names = map groupName nonempty
+    group <- gridselect (appsGSC apps) $ zip names nonempty
+    whenJust group $ \app ->
+      selectWithQuery apps (query app) (action app)
+  where
+    isNotEmpty :: App -> X Bool
+    isNotEmpty group = (not . null) `fmap` matchingWindows (query group)
+
+switchToApp :: AppsConfig -> String -> X ()
+switchToApp apps name = 
+  case filter (\a -> groupName a == name) (appsList apps) of
+    [app] -> do
+      ws <- matchingWindows (query app)
+      case ws of
+        []  -> action app
+        [w] -> myFocus apps w
+        _   -> selectOneWindow (windowsGSC apps) ws
+    _     -> return ()
+
+selectWorkspaceOn :: AppsConfig -> Maybe ScreenId -> X ()
+selectWorkspaceOn conf Nothing = withWindowSet $ \ws -> do
+    let wss = map W.tag $ W.hidden ws ++ map W.workspace (W.current ws : W.visible ws)
+    selected <- gridselect (workspacesGSC conf) (zip wss wss)
+    whenJust selected $ \wksp -> do
+        case lookup wksp $ workspacesMapping conf of
+          Nothing  -> windows (W.view wksp)
+          Just sid -> windows (viewOnScreen sid wksp)
+selectWorkspaceOn conf (Just sid) = withWindowSet $ \ws -> do
+    let wss = map W.tag $ W.hidden ws ++ map W.workspace (W.current ws : W.visible ws)
+    screenWorkspace sid >>= flip whenJust (windows . W.view)
+    selected <- gridselect (workspacesGSC conf) (zip wss wss)
+    whenJust selected $ \wksp ->
+        windows (viewOnScreen sid wksp)
+
