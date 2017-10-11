@@ -1,4 +1,4 @@
-{-# LANGUAGE ExistentialQuantification, TypeSynonymInstances, FlexibleInstances, DeriveDataTypeable, PatternGuards, ViewPatterns #-}
+{-# LANGUAGE ExistentialQuantification, TypeSynonymInstances, FlexibleInstances, DeriveDataTypeable, PatternGuards, ViewPatterns, OverloadedStrings #-}
 
 -- | Applications group is defined by set of conditions for windows.
 -- This module allows to define ManageHooks and keyboard shortcuts
@@ -20,6 +20,11 @@ module XMonad.AppGroups
 import Control.Monad
 import Data.Maybe
 import Data.Monoid
+import Data.List (isPrefixOf, isSuffixOf)
+import Data.Yaml
+import Data.Aeson.Types (typeMismatch)
+import System.FilePath
+import System.Environment
 
 import XMonad hiding (float)
 import qualified XMonad
@@ -31,6 +36,7 @@ import XMonad.Layout.Minimize
 import XMonad.Util.WindowProperties
 import XMonad.Util.WindowPropertiesRE
 import XMonad.Util.NamedWindows
+import XMonad.Util.ExtensibleState as XS
 import XMonad.Hooks.ManageHelpers hiding (C)
 
 import XMonad.Utils
@@ -50,6 +56,14 @@ instance Condition Property where
 instance Condition PropertyRE where
   toQuery (RE p) = propertyToQueryRE p
 
+instance Condition Bool where
+  toQuery bool = return bool
+
+data AndC = AndC Cond Cond
+
+instance Condition AndC where
+  toQuery (AndC (C c1) (C c2)) = liftM2 (&&) (toQuery c1) (toQuery c2)
+
 -- | Keyboard shortcut
 type Key = String
 
@@ -60,6 +74,18 @@ data AppsConfig = AppsConfig {
     appsGSC :: GSConfig App,
     workspacesGSC :: GSConfig WorkspaceId,
     workspacesMapping :: [(WorkspaceId, ScreenId)] }
+
+instance FromJSON AppsConfig where
+  parseJSON (Object v) = do
+    apps <- v .: "applications"
+    screens <- v .:? "screens" .!= []
+    let mapping = fromGroups screens
+    return $ AppsConfig apps def def def mapping
+
+  parseJSON invalid = typeMismatch "AppsConfig" invalid
+
+instance ExtensionClass AppsConfig where
+  initialValue = AppsConfig [] def def def []
 
 -- | Application group configuration
 data App = App {
@@ -74,11 +100,70 @@ data App = App {
    , shortName :: Maybe String -- ^ Group short name
 }
 
+instance FromJSON App where
+  parseJSON (Object v) = do
+    key <- v .:? "key"
+    mbCommand <- v .:? "command"
+    conds <- v .: "conditions"
+    full <- v .:? "fullscreen" .!= False
+    float <- v .:? "float" .!= False
+    nofocus <- v .:? "no-focus" .!= False
+    wksp <- v .:? "workspace"
+    jump <- v .:? "jump" .!= True
+    name <- v .:? "name" .!= wksp
+
+    let action = case mbCommand of
+                   Nothing -> return ()
+                   Just command -> spawn command
+    return $ App key action conds full float nofocus wksp jump name
+
+  parseJSON invalid = typeMismatch "App" invalid
+
 -- | Container type for any condition
 data Cond = forall c. Condition c => C c
 
 -- | List of conditions
 type Conds = [Cond]
+
+instance FromJSON Cond where
+  parseJSON (Object v) = do
+      mbClass <- v .:? "class"
+      mbTitle <- v .:? "title"
+
+      let clsCond =     case mbClass of
+                          Nothing -> C True
+                          Just cls -> if isRegexp cls
+                                        then C $ RE $ ClassName (stripRegexp cls)
+                                        else C $ ClassName cls
+      let titleCond =   case mbTitle of
+                          Nothing -> C True
+                          Just title -> if isRegexp title
+                                          then C $ RE $ Title (stripRegexp title)
+                                          else C $ Title (stripRegexp title)
+      return $ C $ AndC clsCond titleCond
+
+    where
+      isRegexp :: String -> Bool
+      isRegexp str = "/" `isPrefixOf` str && "/" `isSuffixOf` str
+
+      stripRegexp :: String -> String
+      stripRegexp str = tail $ init str
+
+  parseJSON invalid = typeMismatch "Cond" invalid
+
+readConfig :: IO AppsConfig
+readConfig = do
+  home <- getEnv "HOME"
+  let path = home </> ".xmonad" </> "applications.yaml"
+  x <- decodeFileEither path
+  case x of
+    Left err -> fail $ show err
+    Right cfg -> return cfg
+
+loadConfig :: X ()
+loadConfig = do
+  cfg <- io readConfig
+  XS.put cfg
 
 {-
 EDSL для описания групп приложений
