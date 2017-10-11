@@ -13,7 +13,7 @@ module XMonad.AppGroups
    (~>), (~>>),
    fromGroups,
    doFullscreen, query,
-   oneOf, allOf, apps2hooks, apps2keys,
+   apps2hooks, apps2keys,
    selectAppGroup, switchToApp, selectWorkspaceOn)
   where
 
@@ -241,14 +241,6 @@ doFullscreen = fromWindowOp (withDisplay . fullscreen)
                            s = defaultScreenOfDisplay d
                         in do XMonad.float w
                               io $ resizeWindow d w wd ht
-
--- | Similar to @or@.
-oneOf :: [Query Bool] -> Query Bool
-oneOf list = foldl1 (<||>) list
-
--- | Similar to @and@.
-allOf :: [Query Bool] -> Query Bool
-allOf list = foldl1 (<&&>) list
 
 -- | Returns @True@, if the window is not transient.
 isNotTransient :: Query Bool

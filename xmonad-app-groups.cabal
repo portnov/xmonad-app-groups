@@ -2,7 +2,7 @@
 -- documentation, see http://haskell.org/cabal/users-guide/
 
 name:                xmonad-app-groups
-version:             0.1.0.1
+version:             0.1.0.2
 synopsis:            XMonad application groups
 -- description:         
 license:             BSD3
