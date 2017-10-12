@@ -1,4 +1,4 @@
-{-# LANGUAGE ExistentialQuantification, TypeSynonymInstances, FlexibleInstances, DeriveDataTypeable, PatternGuards, ViewPatterns, OverloadedStrings #-}
+{-# LANGUAGE ExistentialQuantification, TypeSynonymInstances, FlexibleInstances, DeriveDataTypeable, PatternGuards, ViewPatterns, OverloadedStrings, FlexibleContexts #-}
 
 -- | Applications group is defined by set of conditions for windows.
 -- This module allows to define ManageHooks and keyboard shortcuts
@@ -14,13 +14,17 @@ module XMonad.AppGroups
    fromGroups,
    doFullscreen, query,
    apps2hooks, apps2keys,
-   selectAppGroup, switchToApp, selectWorkspaceOn)
-  where
+   moveToOwnWorkspace,
+   readConfig, useAppGroupsConfig,
+   selectAppGroup, switchToApp, selectWorkspaceOn
+  ) where
 
 import Control.Monad
 import Data.Maybe
 import Data.Monoid
+import Data.Default
 import Data.List (isPrefixOf, isSuffixOf)
+import Data.Char (toLower, isAlphaNum)
 import Data.Yaml
 import Data.Aeson.Types (typeMismatch)
 import System.FilePath
@@ -36,6 +40,7 @@ import XMonad.Layout.Minimize
 import XMonad.Util.WindowProperties
 import XMonad.Util.WindowPropertiesRE
 import XMonad.Util.NamedWindows
+import XMonad.Util.EZConfig (additionalKeysP)
 import XMonad.Util.ExtensibleState as XS
 import XMonad.Hooks.ManageHelpers hiding (C)
 
@@ -73,19 +78,24 @@ data AppsConfig = AppsConfig {
     windowsGSC :: GSConfig Window,
     appsGSC :: GSConfig App,
     workspacesGSC :: GSConfig WorkspaceId,
+    prohibitOwnWorkspaces :: [WorkspaceId],
     workspacesMapping :: [(WorkspaceId, ScreenId)] }
+
+instance Default AppsConfig where
+  def = AppsConfig [] def def def [] []
 
 instance FromJSON AppsConfig where
   parseJSON (Object v) = do
     apps <- v .: "applications"
     screens <- v .:? "screens" .!= []
+    prohibit <- v .:? "prohibit-workspaces" .!=  []
     let mapping = fromGroups screens
-    return $ AppsConfig apps def def def mapping
+    return $ AppsConfig apps def def def prohibit mapping
 
   parseJSON invalid = typeMismatch "AppsConfig" invalid
 
 instance ExtensionClass AppsConfig where
-  initialValue = AppsConfig [] def def def []
+  initialValue = def
 
 -- | Application group configuration
 data App = App {
@@ -160,10 +170,13 @@ readConfig = do
     Left err -> fail $ show err
     Right cfg -> return cfg
 
-loadConfig :: X ()
-loadConfig = do
-  cfg <- io readConfig
-  XS.put cfg
+useAppGroupsConfig :: (LayoutClass l Window, Read (l Window)) => XConfig l -> IO (XConfig l)
+useAppGroupsConfig xcfg = do
+  cfg <- readConfig
+  return $ xcfg {
+             manageHook = composeOne (apps2hooks cfg) <+> moveToOwnWorkspace cfg <+> manageHook xcfg
+          } `additionalKeysP` apps2keys cfg
+
 
 {-
 EDSL для описания групп приложений
@@ -359,4 +372,25 @@ selectWorkspaceOn conf (Just sid) = withWindowSet $ \ws -> do
     selected <- gridselect (workspacesGSC conf) (zip wss wss)
     whenJust selected $ \wksp ->
         windows (viewOnScreen sid wksp)
+
+moveToOwnWorkspace :: AppsConfig -> ManageHook
+moveToOwnWorkspace apps = do
+  window <- ask
+  matching <- liftX $ runQuery (oneOf $ map query $ appsList apps) window
+  floating <- liftX $ isFloat window
+  transient <- liftX $ runQuery transientTo window
+  unlessH (matching || floating || isJust transient) $ do
+      wksp <- liftX (windowWorkspace window)
+      whenH (wksp `notElem` prohibitOwnWorkspaces apps) $
+          createAndMove True (lookup wksp $ workspacesMapping apps) wksp
+
+windowWorkspace :: Window -> X WorkspaceId
+windowWorkspace win = do
+    cls <- withDisplay $ \d -> fmap resName $ io $ getClassHint d win
+    let cls' = map (anySeparatorToSpace . toLower) cls
+        wksp = head $ words cls'
+    return wksp
+  where
+    anySeparatorToSpace c | isAlphaNum c = c
+                          | otherwise    = ' '
 
