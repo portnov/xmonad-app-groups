@@ -19,7 +19,7 @@ library
   exposed-modules:     XMonad.AppGroups
   -- other-modules:       
   other-extensions:    ExistentialQuantification, TypeSynonymInstances, FlexibleInstances, DeriveDataTypeable, PatternGuards, ViewPatterns
-  build-depends:       base >=4.9 && <4.10,
+  build-depends:       base >=4.9 && < 5,
                        filepath >= 1.4,
                        data-default >= 0.7,
                        aeson >= 1.1.2.0,

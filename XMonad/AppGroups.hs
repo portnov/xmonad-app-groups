@@ -331,7 +331,7 @@ selectWithQuery apps qry run = do
           selected <- gridselect (windowsGSC apps) $ zip titles wins
           whenJust selected $ \w -> do
              myFocus apps w
-             sendMessage (RestoreMinimizedWin w)
+             -- sendMessage (RestoreMinimizedWin w)
   where
     windowTitle w = show `fmap` getName w
 

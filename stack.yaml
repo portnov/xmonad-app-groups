@@ -22,7 +22,7 @@ resolver: lts-9.6
 #
 packages:
 - .
-- /home/portnov/src/xmonad-modules/xmonad-utils/
+- /home/portnov/src/xmonad-modules/xmonad-functions/
 # Dependency packages to be pulled from upstream that are not in the resolver
 # (e.g., acme-missiles-0.3)
 extra-deps: []
