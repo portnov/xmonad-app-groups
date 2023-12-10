@@ -11,6 +11,8 @@ module XMonad.AppGroups
    group, on, full, float,
    nofocus, named, orSpawn, orRun,
    (~>), (~>>),
+   handleDynamic,
+   dynamicHooks,
    fromGroups,
    doFullscreen, query,
    apps2hooks, apps2keys,
@@ -24,6 +26,7 @@ import Data.Maybe
 import Data.Monoid
 import Data.Default
 import Data.List (isPrefixOf, isSuffixOf)
+import qualified Data.Map as M
 import Data.Char (toLower, isAlphaNum)
 import Data.Yaml
 import Data.Aeson.Types (typeMismatch)
@@ -43,6 +46,8 @@ import XMonad.Util.NamedWindows
 import XMonad.Util.EZConfig (additionalKeysP)
 import XMonad.Util.ExtensibleState as XS
 import XMonad.Hooks.ManageHelpers hiding (C)
+import XMonad.Hooks.DynamicProperty
+import XMonad.Actions.Minimize
 
 import XMonad.Utils
 
@@ -107,6 +112,7 @@ data App = App {
    , noFocus :: Bool
    , moveToWksp :: Maybe WorkspaceId -- ^ Specify workspace
    , jumpToWksp :: Bool
+   , dynamicProperty :: Maybe String
    , shortName :: Maybe String -- ^ Group short name
 }
 
@@ -120,12 +126,13 @@ instance FromJSON App where
     nofocus <- v .:? "no-focus" .!= False
     wksp <- v .:? "workspace"
     jump <- v .:? "jump" .!= True
+    dynProp <- v .:? "dynamic_property"
     name <- v .:? "name" .!= wksp
 
     let action = case mbCommand of
                    Nothing -> return ()
                    Just command -> spawn command
-    return $ App key action conds full float nofocus wksp jump name
+    return $ App key action conds full float nofocus wksp jump dynProp name
 
   parseJSON invalid = typeMismatch "App" invalid
 
@@ -200,6 +207,7 @@ group conds = App {
   noFocus = False,
   moveToWksp = Nothing,
   jumpToWksp = False,
+  dynamicProperty = Nothing,
   shortName = Nothing }
 
 -- | Associate keyboard shortcut with a group.
@@ -237,6 +245,9 @@ app ~> wksp = app {moveToWksp = Just wksp}
 (~>>) :: App -> WorkspaceId -> App
 app ~>> wksp = app {moveToWksp = Just wksp, jumpToWksp = True}
 
+handleDynamic :: App -> String -> App
+handleDynamic app property = app {dynamicProperty = Just property}
+
 -- Утилиты
 
 fromGroups :: [[WorkspaceId]] -> [(WorkspaceId, ScreenId)]
@@ -272,6 +283,11 @@ appHook mbSID app = query app -?> mconcat $ [
                               whenH (makeFullscreen app) doFullscreen, 
                               whenJustH (moveToWksp app) (createAndMove (jumpToWksp app) mbSID) ]
 
+appHookWithScreen :: AppsConfig -> App -> MaybeManageHook
+appHookWithScreen apps app = appHook (scr app) app
+  where
+    scr app = moveToWksp app >>= flip lookup (workspacesMapping apps)
+
 -- | Group name.
 groupName :: App -> String
 groupName app
@@ -279,10 +295,21 @@ groupName app
         | Just wksp <- moveToWksp app = wksp
         | otherwise                   = "unknown"
  
+
+apps2hooks' :: AppsConfig -> [App] -> [MaybeManageHook]
+apps2hooks' apps lst = map (appHookWithScreen apps) lst
+
 apps2hooks :: AppsConfig -> [MaybeManageHook]
-apps2hooks apps = map hook (appsList apps)
-   where hook app = appHook (scr app) app
-         scr app = moveToWksp app >>= flip lookup (workspacesMapping apps)
+apps2hooks apps = apps2hooks' apps (appsList apps)
+
+dynamicHooks :: AppsConfig -> Event -> X All
+dynamicHooks apps event = do
+    results <- forM (M.assocs $ compose (appsList apps)) $ \(property, hook) -> do
+                   dynamicPropertyChange property (maybeToDefinite hook) event
+    return $ mconcat results
+  where
+    compose lst = M.fromListWith (<+>) [(property, appHookWithScreen apps app)
+                    | app@(App {dynamicProperty = Just property}) <- lst]
 
 {-
 Список привязок сочетаний клавиш.
@@ -310,12 +337,15 @@ myFocus :: AppsConfig -> Window -> X ()
 myFocus apps w = do
   visible <- isVisible w
   if visible
-    then focus w
+    then do
+      maximizeWindowAndFocus w
+      focus w
     else withWindowSet $ \ws -> do
            whenJust (W.findTag w ws) $ \wksp -> do
              let sid = fromMaybe (W.screen $ W.current ws) $ lookup wksp (workspacesMapping apps)
              targetWksp <- screenWorkspace sid
              whenJust targetWksp (windows . W.view)
+             maximizeWindowAndFocus w
              focus w
 
 -- | Select windows from ones matching the query (using @X.A.GridSelect@),
