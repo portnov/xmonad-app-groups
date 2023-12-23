@@ -291,7 +291,8 @@ appHook :: Maybe ScreenId -> App -> MaybeManageHook
 appHook mbSID app = query app -?> mconcat $ [
                               whenH (makeFloat app)      doFloat,
                               whenH (makeFullscreen app) doFullscreen, 
-                              whenJustH (moveToWksp app) (createAndMove (jumpToWksp app) mbSID) ]
+                              whenJustH (moveToWksp app) (createAndMove (jumpToWksp app) mbSID),
+                              whenH (not $ null $ setTags app) (fromWindowOp $ Tag.setTags (setTags app))]
 
 appHookWithScreen :: AppsConfig -> App -> MaybeManageHook
 appHookWithScreen apps app = appHook (scr app) app
