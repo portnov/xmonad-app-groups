@@ -48,6 +48,7 @@ import XMonad.Util.ExtensibleState as XS
 import XMonad.Hooks.ManageHelpers hiding (C)
 import XMonad.Hooks.DynamicProperty
 import XMonad.Actions.Minimize
+import qualified XMonad.Actions.TagWindows as Tag
 
 import XMonad.Utils
 
@@ -113,6 +114,7 @@ data App = App {
    , moveToWksp :: Maybe WorkspaceId -- ^ Specify workspace
    , jumpToWksp :: Bool
    , dynamicProperty :: Maybe String
+   , setTags :: [String]
    , shortName :: Maybe String -- ^ Group short name
 }
 
@@ -127,12 +129,13 @@ instance FromJSON App where
     wksp <- v .:? "workspace"
     jump <- v .:? "jump" .!= True
     dynProp <- v .:? "dynamic_property"
+    tags <- v .:? "tags" .!= []
     name <- v .:? "name" .!= wksp
 
     let action = case mbCommand of
                    Nothing -> return ()
                    Just command -> spawn command
-    return $ App key action conds full float nofocus wksp jump dynProp name
+    return $ App key action conds full float nofocus wksp jump dynProp tags name
 
   parseJSON invalid = typeMismatch "App" invalid
 
@@ -208,6 +211,7 @@ group conds = App {
   moveToWksp = Nothing,
   jumpToWksp = False,
   dynamicProperty = Nothing,
+  setTags = [],
   shortName = Nothing }
 
 -- | Associate keyboard shortcut with a group.
@@ -247,6 +251,12 @@ app ~>> wksp = app {moveToWksp = Just wksp, jumpToWksp = True}
 
 handleDynamic :: App -> String -> App
 handleDynamic app property = app {dynamicProperty = Just property}
+
+tag :: App -> String -> App
+tag app name = app {setTags = [name]}
+
+tags :: App -> [String] -> App
+tags app names = app {setTags = names}
 
 -- Утилиты
 
