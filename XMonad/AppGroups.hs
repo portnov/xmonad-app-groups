@@ -9,6 +9,7 @@
 module XMonad.AppGroups
   (Key, App, AppsConfig (..), Condition (..), Cond (..),
    group, on, full, float,
+   tag,
    nofocus, named, orSpawn, orRun,
    (~>), (~>>),
    handleDynamic,
@@ -18,15 +19,18 @@ module XMonad.AppGroups
    apps2hooks, apps2keys,
    moveToOwnWorkspace,
    readConfig, useAppGroupsConfig,
-   selectAppGroup, switchToApp, selectWorkspaceOn
+   selectAppGroup, switchToApp, selectWorkspaceOn,
+   addTagToWindow, removeTagFromWindow, setTagsForWindow,
+   addTagToWorkspace, removeTagFromWorkspace, setTagOnWorkspace
   ) where
 
 import Control.Monad
 import Data.Maybe
 import Data.Monoid
 import Data.Default
-import Data.List (isPrefixOf, isSuffixOf)
+import Data.List (isPrefixOf, isSuffixOf, delete)
 import qualified Data.Map as M
+import qualified Data.Set as S
 import Data.Char (toLower, isAlphaNum)
 import Data.Yaml
 import Data.Aeson.Types (typeMismatch)
@@ -44,11 +48,14 @@ import XMonad.Util.WindowProperties
 import XMonad.Util.WindowPropertiesRE
 import XMonad.Util.NamedWindows
 import XMonad.Util.EZConfig (additionalKeysP)
-import XMonad.Util.ExtensibleState as XS
 import XMonad.Hooks.ManageHelpers hiding (C)
 import XMonad.Hooks.DynamicProperty
 import XMonad.Actions.Minimize
 import qualified XMonad.Actions.TagWindows as Tag
+import qualified XMonad.Util.ExtensibleState as XS
+import qualified XMonad.Actions.CopyWindow as Copy
+import XMonad.Util.Stack
+import XMonad.Layout.WindowArranger (diff)
 
 import XMonad.Utils
 
@@ -81,6 +88,9 @@ type Key = String
 -- | List of application groups
 data AppsConfig = AppsConfig {
     appsList :: [App],
+    modeKeyMod :: String,
+    bringHereKeyMod :: Maybe String,
+    removeFromHereKeyMod :: Maybe String,
     windowsGSC :: GSConfig Window,
     appsGSC :: GSConfig App,
     workspacesGSC :: GSConfig WorkspaceId,
@@ -88,15 +98,18 @@ data AppsConfig = AppsConfig {
     workspacesMapping :: [(WorkspaceId, ScreenId)] }
 
 instance Default AppsConfig where
-  def = AppsConfig [] def def def [] []
+  def = AppsConfig [] "" Nothing Nothing def def def [] []
 
 instance FromJSON AppsConfig where
   parseJSON (Object v) = do
     apps <- v .: "applications"
+    modeKey <- v .:? "mode_key" .!= ""
+    addKey <- v .:? "bring_here_key"
+    removeKey <- v .:? "remove_key"
     screens <- v .:? "screens" .!= []
     prohibit <- v .:? "prohibit-workspaces" .!=  []
     let mapping = fromGroups screens
-    return $ AppsConfig apps def def def prohibit mapping
+    return $ AppsConfig apps modeKey addKey removeKey def def def prohibit mapping
 
   parseJSON invalid = typeMismatch "AppsConfig" invalid
 
@@ -114,9 +127,17 @@ data App = App {
    , moveToWksp :: Maybe WorkspaceId -- ^ Specify workspace
    , jumpToWksp :: Bool
    , dynamicProperty :: Maybe String
-   , setTags :: [String]
+   , setTag :: Maybe String
    , shortName :: Maybe String -- ^ Group short name
 }
+
+instance Show App where
+  show app
+    | Just name <- shortName app = name
+    | Just wksp <- moveToWksp app = wksp
+    | Just tag <- setTag app = tag
+    | Just key <- hotkey app = key
+    | otherwise = "<App>"
 
 instance FromJSON App where
   parseJSON (Object v) = do
@@ -129,7 +150,7 @@ instance FromJSON App where
     wksp <- v .:? "workspace"
     jump <- v .:? "jump" .!= True
     dynProp <- v .:? "dynamic_property"
-    tags <- v .:? "tags" .!= []
+    tags <- v .:? "tag"
     name <- v .:? "name" .!= wksp
 
     let action = case mbCommand of
@@ -211,7 +232,7 @@ group conds = App {
   moveToWksp = Nothing,
   jumpToWksp = False,
   dynamicProperty = Nothing,
-  setTags = [],
+  setTag = Nothing,
   shortName = Nothing }
 
 -- | Associate keyboard shortcut with a group.
@@ -253,10 +274,7 @@ handleDynamic :: App -> String -> App
 handleDynamic app property = app {dynamicProperty = Just property}
 
 tag :: App -> String -> App
-tag app name = app {setTags = [name]}
-
-tags :: App -> [String] -> App
-tags app names = app {setTags = names}
+tag app name = app {setTag = Just name}
 
 -- Утилиты
 
@@ -292,7 +310,7 @@ appHook mbSID app = query app -?> mconcat $ [
                               whenH (makeFloat app)      doFloat,
                               whenH (makeFullscreen app) doFullscreen, 
                               whenJustH (moveToWksp app) (createAndMove (jumpToWksp app) mbSID),
-                              whenH (not $ null $ setTags app) (fromWindowOp $ Tag.setTags (setTags app))]
+                              whenJustH (appTag app) (\tag -> fromWindowOp $ setTagsForWindow [tag])]
 
 appHookWithScreen :: AppsConfig -> App -> MaybeManageHook
 appHookWithScreen apps app = appHook (scr app) app
@@ -306,6 +324,12 @@ groupName app
         | Just wksp <- moveToWksp app = wksp
         | otherwise                   = "unknown"
  
+appTag :: App -> Maybe String
+appTag app
+  | Just tag <- setTag app = Just tag
+  | Just name <- shortName app = Just name
+  | Just wksp <- moveToWksp app = Just wksp
+  | otherwise = Nothing
 
 apps2hooks' :: AppsConfig -> [App] -> [MaybeManageHook]
 apps2hooks' apps lst = map (appHookWithScreen apps) lst
@@ -331,11 +355,25 @@ dynamicHooks apps event = do
 
 -- | Hotkeys list.
 apps2keys :: AppsConfig -> [(String, X ())]
-apps2keys apps = mapMaybe getHotkey (appsList apps)
+apps2keys apps = concatMap getHotkey (appsList apps)
   where
     getHotkey app
-      | Just key <- hotkey app = Just (key, selectWithQuery apps (query app) (action app))
-      | otherwise              = Nothing
+      | Just key <- hotkey app = mkSelectKey key app
+                                 ++ mkBringKey key app
+                                 ++ mkRemoveKey key app
+      | otherwise              = []
+
+    mkSelectKey key app = [(modeKeyMod apps ++ key, selectWithQuery apps (query app) (action app))]
+
+    mkBringKey key app
+      | Just shift <- bringHereKeyMod apps,
+        Just tag <- appTag app = [(modeKeyMod apps ++ shift ++ key, addTagToWorkspace tag)]
+      | otherwise = []
+
+    mkRemoveKey key app
+      | Just ctrl <- removeFromHereKeyMod apps,
+        Just tag <- appTag app = [(modeKeyMod apps ++ ctrl ++ key, removeTagFromWorkspace tag)]
+      | otherwise = []
 
 isVisible :: Window -> X Bool
 isVisible w =  withWindowSet $ \ws -> do
@@ -434,4 +472,112 @@ windowWorkspace win = do
   where
     anySeparatorToSpace c | isAlphaNum c = c
                           | otherwise    = ' '
+
+
+newtype TagsMap = TagsMap (M.Map String (S.Set WorkspaceId))
+  deriving (Eq, Read, Show, Typeable)
+
+instance ExtensionClass TagsMap where
+  initialValue = TagsMap M.empty
+  extensionType = PersistentExtension
+
+getWorkspacesByTag :: String -> X (S.Set WorkspaceId)
+getWorkspacesByTag tagName = do
+  TagsMap m <- XS.get
+  return $ fromMaybe S.empty $ M.lookup tagName m
+
+getTagsByWorkspace :: WorkspaceId -> X [String]
+getTagsByWorkspace wksp = do
+  TagsMap m <- XS.get
+  return $ M.keys $ M.filter (wksp `S.member`) m
+
+addTagToWorkspace :: String -> X ()
+addTagToWorkspace tagName = do
+  wksp <- gets (W.tag . W.workspace . W.current . windowset)
+  TagsMap m <- XS.get
+  let m' = M.insertWith S.union tagName (S.singleton wksp) m
+  XS.put $ TagsMap m'
+  Tag.withTaggedGlobal tagName $ \w -> windows (Copy.copyWindow w wksp)
+
+removeTagFromWorkspace :: String -> X ()
+removeTagFromWorkspace tagName = do
+  wksp <- gets (W.tag . W.workspace . W.current . windowset)
+  TagsMap m <- XS.get
+  let up ws =
+        let ws' = S.delete wksp ws
+        in  if S.null ws'
+              then Nothing
+              else Just ws'
+      m' = M.update up tagName m 
+  XS.put $ TagsMap m'
+  Tag.withTagged tagName killCurrentCopy
+
+setTagOnWorkspace :: String -> X ()
+setTagOnWorkspace tagName = do
+  wksp <- gets (W.tag . W.workspace . W.current . windowset)
+  oldTags <- getTagsByWorkspace wksp
+  TagsMap m <- XS.get
+  let up t ws 
+        | t == tagName = S.insert wksp ws
+        | otherwise    = S.delete wksp ws
+      m' = M.mapWithKey up m
+  XS.put $ TagsMap m'
+  forM_ (delete tagName oldTags) $ \oldTag ->
+    Tag.withTagged oldTag killCurrentCopy
+  Tag.withTaggedGlobal tagName $ \w -> windows (Copy.copyWindow w wksp)
+
+addTagToWindow :: String -> Window -> X ()
+addTagToWindow tagName win = do
+  Tag.addTag tagName win
+  wksps <- getWorkspacesByTag tagName
+  forM_ (S.toList wksps) $ \wksp -> windows (Copy.copyWindow win wksp)
+
+setTagsForWindow :: [String] -> Window -> X ()
+setTagsForWindow tagNames win = do
+  oldTags <- Tag.getTags win
+  Tag.setTags tagNames win
+  let (tagsToAdd, tagsToRemove) = diff (tagNames, oldTags)
+  forM_ tagsToAdd $ \tagToAdd -> do
+    wksps <- getWorkspacesByTag tagToAdd
+    forM_ (S.toList wksps) $ \wksp -> windows (Copy.copyWindow win wksp)
+  forM_ tagsToRemove $ \tagToRemove -> do
+    wksps <- getWorkspacesByTag tagToRemove
+    killCopies win wksps
+
+removeTagFromWindow :: String -> Window -> X ()
+removeTagFromWindow tagName win = do
+  Tag.delTag tagName win
+  wksps <- getWorkspacesByTag tagName
+  killCopies win wksps
+
+copyHere :: Window -> X ()
+copyHere win = do
+  wksp <- gets (W.tag . W.workspace . W.current . windowset)
+  windows $ Copy.copyWindow win wksp
+
+killCurrentCopy :: Window -> X ()
+killCurrentCopy win = do
+    ws <- gets windowset
+    if W.member win $ delete'' win ws
+      then windows $ delete'' win
+      else minimizeWindow win
+  where
+    delete'' w = W.modify Nothing (W.filter (/= w))
+
+killCopy :: Window -> WorkspaceId -> X ()
+killCopy win wkspId = killCopies win (S.singleton wkspId)
+
+killCopies :: Window -> S.Set WorkspaceId -> X ()
+killCopies win wkspIds = do
+    ws <- gets windowset
+    if W.member win $ delete' ws
+      then windows delete' 
+      else minimizeWindow win
+  where
+    delete' = W.mapWorkspace $ \wksp ->
+                if W.tag wksp `S.member` wkspIds
+                  then wksp {
+                              W.stack = filterZ (\_ w -> w /= win) (W.stack wksp)
+                            }
+                  else wksp
 
