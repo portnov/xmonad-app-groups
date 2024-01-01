@@ -309,8 +309,19 @@ appHook :: Maybe ScreenId -> App -> MaybeManageHook
 appHook mbSID app = query app -?> mconcat $ [
                               whenH (makeFloat app)      doFloat,
                               whenH (makeFullscreen app) doFullscreen, 
-                              whenJustH (moveToWksp app) (createAndMove (jumpToWksp app) mbSID),
-                              whenJustH (appTag app) (\tag -> fromWindowOp $ setTagsForWindow [tag])]
+                              whenJustH (appTag app) setTagForWindowH,
+                              whenJustH (moveToWksp app) (\mbWksp -> do
+                                  alreadyThere <- isAlreadyThere
+                                  createAndMove (not alreadyThere && jumpToWksp app) mbSID mbWksp)]
+  where
+    isAlreadyThere :: Query Bool
+    isAlreadyThere = do
+      case appTag app of
+        Nothing -> return False
+        Just tagName -> liftX $ do
+          wksp <- gets (W.tag . W.workspace . W.current . windowset)
+          tags <- getTagsByWorkspace wksp
+          return $ tagName `elem` tags
 
 appHookWithScreen :: AppsConfig -> App -> MaybeManageHook
 appHookWithScreen apps app = appHook (scr app) app
@@ -532,6 +543,14 @@ addTagToWindow tagName win = do
   wksps <- getWorkspacesByTag tagName
   forM_ (S.toList wksps) $ \wksp -> windows (Copy.copyWindow win wksp)
 
+setTagForWindowH :: String -> ManageHook
+setTagForWindowH tagName = do
+  win <- ask
+  liftX $ Tag.setTags [tagName] win
+  wksps <- liftX $ getWorkspacesByTag tagName
+  let fns = [Endo $ Copy.copyWindow win wksp | wksp <- S.toList wksps]
+  doF $ appEndo $ mconcat fns
+
 setTagsForWindow :: [String] -> Window -> X ()
 setTagsForWindow tagNames win = do
   oldTags <- Tag.getTags win
@@ -539,7 +558,8 @@ setTagsForWindow tagNames win = do
   let (tagsToAdd, tagsToRemove) = diff (tagNames, oldTags)
   forM_ tagsToAdd $ \tagToAdd -> do
     wksps <- getWorkspacesByTag tagToAdd
-    forM_ (S.toList wksps) $ \wksp -> windows (Copy.copyWindow win wksp)
+    let fns = [Endo $ Copy.copyWindow win wksp | wksp <- S.toList wksps]
+    windows $ appEndo $ mconcat fns
   forM_ tagsToRemove $ \tagToRemove -> do
     wksps <- getWorkspacesByTag tagToRemove
     killCopies win wksps
