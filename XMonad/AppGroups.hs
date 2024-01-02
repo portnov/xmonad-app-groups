@@ -8,6 +8,7 @@
 
 module XMonad.AppGroups
   (Key, App, AppsConfig (..), Condition (..), Cond (..),
+   initializeAppGroups,
    group, on, full, float,
    tag,
    nofocus, named, orSpawn, orRun,
@@ -357,6 +358,19 @@ dynamicHooks apps event = do
     compose lst = M.fromListWith (<+>) [(property, appHookWithScreen apps app)
                     | app@(App {dynamicProperty = Just property}) <- lst]
 
+dfltWorkspacesByTag :: AppsConfig -> M.Map String (S.Set WorkspaceId)
+dfltWorkspacesByTag apps = foldr go M.empty (appsList apps)
+  where
+    go app m =
+      case (appTag app, moveToWksp app) of
+        (Just tagName, Just wksp) -> M.insertWith S.union tagName (S.singleton wksp) m
+        _ -> m
+
+initializeAppGroups :: AppsConfig -> X ()
+initializeAppGroups apps = do
+  let m = dfltWorkspacesByTag apps
+  XS.put $ TagsMap m
+
 {-
 Список привязок сочетаний клавиш.
 Каждая комбинация клавиш будет переключать к одному из окон соответствующей
@@ -541,7 +555,8 @@ addTagToWindow :: String -> Window -> X ()
 addTagToWindow tagName win = do
   Tag.addTag tagName win
   wksps <- getWorkspacesByTag tagName
-  forM_ (S.toList wksps) $ \wksp -> windows (Copy.copyWindow win wksp)
+  let fns = [Endo $ Copy.copyWindow win wksp | wksp <- S.toList wksps]
+  windows $ appEndo $ mconcat fns
 
 setTagForWindowH :: String -> ManageHook
 setTagForWindowH tagName = do
