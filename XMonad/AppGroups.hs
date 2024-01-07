@@ -22,7 +22,8 @@ module XMonad.AppGroups
    readConfig, useAppGroupsConfig,
    selectAppGroup, switchToApp, selectWorkspaceOn,
    addTagToWindow, removeTagFromWindow, setTagsForWindow,
-   addTagToWorkspace, removeTagFromWorkspace, setTagOnWorkspace
+   addTagToWorkspace, addTagToWorkspace', removeTagFromWorkspace, setTagOnWorkspace,
+   createWorkspaceForTag
   ) where
 
 import Control.Monad
@@ -44,6 +45,8 @@ import qualified XMonad.StackSet as W
 
 import XMonad.Actions.GridSelect
 import XMonad.Actions.OnScreen
+import XMonad.Actions.Minimize
+import XMonad.Actions.DynamicWorkspaces
 import XMonad.Layout.Minimize
 import XMonad.Util.WindowProperties
 import XMonad.Util.WindowPropertiesRE
@@ -51,7 +54,6 @@ import XMonad.Util.NamedWindows
 import XMonad.Util.EZConfig (additionalKeysP)
 import XMonad.Hooks.ManageHelpers hiding (C)
 import XMonad.Hooks.DynamicProperty
-import XMonad.Actions.Minimize
 import qualified XMonad.Actions.TagWindows as Tag
 import qualified XMonad.Util.ExtensibleState as XS
 import qualified XMonad.Actions.CopyWindow as Copy
@@ -519,6 +521,11 @@ getTagsByWorkspace wksp = do
 addTagToWorkspace :: String -> X ()
 addTagToWorkspace tagName = do
   wksp <- gets (W.tag . W.workspace . W.current . windowset)
+  addTagToWorkspace' wksp tagName
+
+addTagToWorkspace' :: WorkspaceId -> String -> X ()
+addTagToWorkspace' wksp tagName = do
+  wksp <- gets (W.tag . W.workspace . W.current . windowset)
   TagsMap m <- XS.get
   let m' = M.insertWith S.union tagName (S.singleton wksp) m
   XS.put $ TagsMap m'
@@ -584,6 +591,11 @@ removeTagFromWindow tagName win = do
   Tag.delTag tagName win
   wksps <- getWorkspacesByTag tagName
   killCopies win wksps
+
+createWorkspaceForTag :: String -> X ()
+createWorkspaceForTag tagName = do
+  addHiddenWorkspace tagName
+  addTagToWorkspace' tagName tagName
 
 copyHere :: Window -> X ()
 copyHere win = do
