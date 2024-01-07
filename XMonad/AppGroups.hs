@@ -525,7 +525,6 @@ addTagToWorkspace tagName = do
 
 addTagToWorkspace' :: WorkspaceId -> String -> X ()
 addTagToWorkspace' wksp tagName = do
-  wksp <- gets (W.tag . W.workspace . W.current . windowset)
   TagsMap m <- XS.get
   let m' = M.insertWith S.union tagName (S.singleton wksp) m
   XS.put $ TagsMap m'
