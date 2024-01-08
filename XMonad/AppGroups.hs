@@ -464,18 +464,30 @@ switchToApp apps name =
         _   -> selectOneWindow (windowsGSC apps) ws
     _     -> return ()
 
+getWorkspaceTitlesAndNames :: X [(String, WorkspaceId)]
+getWorkspaceTitlesAndNames = do
+  ws <- gets windowset
+  let workspaces = W.hidden ws ++ map W.workspace (W.current ws : W.visible ws)
+      workspaceNames = map W.tag workspaces
+      workspaceTitles = flip map workspaces $ \wksp ->
+                          let n = length (W.integrate' $ W.stack wksp)
+                          in  if n > 0
+                                then W.tag wksp ++ " (" ++ show n ++ ")"
+                                else W.tag wksp
+  return $ zip workspaceTitles workspaceNames
+
 selectWorkspaceOn :: AppsConfig -> Maybe ScreenId -> X ()
 selectWorkspaceOn conf Nothing = withWindowSet $ \ws -> do
-    let wss = map W.tag $ W.hidden ws ++ map W.workspace (W.current ws : W.visible ws)
-    selected <- gridselect (workspacesGSC conf) (zip wss wss)
+    titlesAndNames <- getWorkspaceTitlesAndNames
+    selected <- gridselect (workspacesGSC conf) titlesAndNames
     whenJust selected $ \wksp -> do
         case lookup wksp $ workspacesMapping conf of
           Nothing  -> windows (W.view wksp)
           Just sid -> windows (viewOnScreen sid wksp)
 selectWorkspaceOn conf (Just sid) = withWindowSet $ \ws -> do
-    let wss = map W.tag $ W.hidden ws ++ map W.workspace (W.current ws : W.visible ws)
     screenWorkspace sid >>= flip whenJust (windows . W.view)
-    selected <- gridselect (workspacesGSC conf) (zip wss wss)
+    titlesAndNames <- getWorkspaceTitlesAndNames
+    selected <- gridselect (workspacesGSC conf) titlesAndNames
     whenJust selected $ \wksp ->
         windows (viewOnScreen sid wksp)
 
