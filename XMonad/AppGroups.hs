@@ -336,6 +336,7 @@ createAndMove jump mbComparator mbSid wksp = do
   liftX (addHiddenWorkspace wksp)
   mbActualSid <- case (mbComparator, mbSid) of
                    (Just comparator, Just (S sid)) -> liftX $ getScreen comparator (P sid)
+                   (Nothing, _) -> return mbSid
                    _ -> return Nothing
   let switchScreen =
         case (mbActualSid, jump) of
