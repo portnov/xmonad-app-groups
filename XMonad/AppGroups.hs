@@ -439,8 +439,11 @@ myFocus apps w = do
       focus w
     else withWindowSet $ \ws -> do
            whenJust (W.findTag w ws) $ \wksp -> do
-             let sid = fromMaybe (W.screen $ W.current ws) $ lookup wksp (workspacesMapping apps)
-             targetWksp <- screenWorkspace sid
+             let screenId@(S sid) = fromMaybe (W.screen $ W.current ws) $ lookup wksp (workspacesMapping apps)
+             actualSid <- case screensComparator apps of
+                            Nothing -> return screenId
+                            Just comparator -> fromJust <$> getScreen comparator (P sid)
+             targetWksp <- screenWorkspace actualSid
              whenJust targetWksp (windows . W.view)
              maximizeWindowAndFocus w
              focus w
