@@ -15,7 +15,7 @@ module XMonad.AppGroups
    (~>), (~>>),
    handleDynamic,
    dynamicHooks,
-   fromGroups,
+   xineramaWorkspaceScreensMapping,
    doFullscreen, query,
    apps2hooks, apps2keys,
    moveToOwnWorkspace,
@@ -47,6 +47,7 @@ import XMonad.Actions.GridSelect
 import XMonad.Actions.OnScreen
 import XMonad.Actions.Minimize
 import XMonad.Actions.DynamicWorkspaces
+import XMonad.Actions.PhysicalScreens
 import XMonad.Layout.Minimize
 import XMonad.Util.WindowProperties
 import XMonad.Util.WindowPropertiesRE
@@ -98,10 +99,12 @@ data AppsConfig = AppsConfig {
     appsGSC :: GSConfig App,
     workspacesGSC :: GSConfig WorkspaceId,
     prohibitOwnWorkspaces :: [WorkspaceId],
-    workspacesMapping :: [(WorkspaceId, ScreenId)] }
+    workspacesMapping :: [(WorkspaceId, ScreenId)],
+    screensComparator :: Maybe ScreenComparator
+  }
 
 instance Default AppsConfig where
-  def = AppsConfig [] "" Nothing Nothing def def def [] []
+  def = AppsConfig [] "" Nothing Nothing def def def [] [] Nothing
 
 instance FromJSON AppsConfig where
   parseJSON (Object v) = do
@@ -111,8 +114,8 @@ instance FromJSON AppsConfig where
     removeKey <- v .:? "remove_key"
     screens <- v .:? "screens" .!= []
     prohibit <- v .:? "prohibit-workspaces" .!=  []
-    let mapping = fromGroups screens
-    return $ AppsConfig apps modeKey addKey removeKey def def def prohibit mapping
+    let mapping = xineramaWorkspaceScreensMapping screens
+    return $ AppsConfig apps modeKey addKey removeKey def def def prohibit mapping Nothing
 
   parseJSON invalid = typeMismatch "AppsConfig" invalid
 
@@ -281,8 +284,8 @@ tag app name = app {setTag = Just name}
 
 -- Утилиты
 
-fromGroups :: [[WorkspaceId]] -> [(WorkspaceId, ScreenId)]
-fromGroups lists = concat $ zipWith toPairs lists [0..]
+xineramaWorkspaceScreensMapping :: [[WorkspaceId]] -> [(WorkspaceId, ScreenId)]
+xineramaWorkspaceScreensMapping lists = concat $ zipWith toPairs lists [0..]
   where
     toPairs list i = [(wksp, i) | wksp <- list]
 
@@ -308,14 +311,15 @@ isNotTransient = do
 query :: App -> Query Bool
 query app = isNotTransient <&&> oneOf [toQuery c | (C c) <- conditions app]
 
-appHook :: Maybe ScreenId -> App -> MaybeManageHook
-appHook mbSID app = query app -?> mconcat $ [
-                              whenH (makeFloat app)      doFloat,
-                              whenH (makeFullscreen app) doFullscreen, 
-                              whenJustH (appTag app) setTagForWindowH,
-                              whenJustH (moveToWksp app) (\mbWksp -> do
-                                  alreadyThere <- isAlreadyThere
-                                  createAndMove (not alreadyThere && jumpToWksp app) mbSID mbWksp)]
+appHook :: Maybe ScreenComparator -> Maybe ScreenId -> App -> MaybeManageHook
+appHook mbComparator mbSID app =
+    query app -?> mconcat $ [
+      whenH (makeFloat app)      doFloat,
+      whenH (makeFullscreen app) doFullscreen, 
+      whenJustH (appTag app) setTagForWindowH,
+      whenJustH (moveToWksp app) (\mbWksp -> do
+          alreadyThere <- isAlreadyThere
+          createAndMove (not alreadyThere && jumpToWksp app) mbComparator mbSID mbWksp)]
   where
     isAlreadyThere :: Query Bool
     isAlreadyThere = do
@@ -326,8 +330,24 @@ appHook mbSID app = query app -?> mconcat $ [
           tags <- getTagsByWorkspace wksp
           return $ tagName `elem` tags
 
+-- | Create new workspace and move current window to it.
+createAndMove :: Bool -> Maybe ScreenComparator -> (Maybe ScreenId) -> WorkspaceId -> ManageHook
+createAndMove jump mbComparator mbSid wksp = do
+  liftX (addHiddenWorkspace wksp)
+  mbActualSid <- case (mbComparator, mbSid) of
+                   (Just comparator, Just (S sid)) -> liftX $ getScreen comparator (P sid)
+                   _ -> return Nothing
+  let switchScreen =
+        case (mbActualSid, jump) of
+          (Nothing,  True)  -> W.view wksp
+          (Just sid, False) -> onlyOnScreen sid wksp
+          (Just sid, True)  -> viewOnScreen sid wksp
+          otherwise         -> id
+  w <- ask
+  doF (switchScreen . W.shiftWin wksp w) :: ManageHook
+
 appHookWithScreen :: AppsConfig -> App -> MaybeManageHook
-appHookWithScreen apps app = appHook (scr app) app
+appHookWithScreen apps app = appHook (screensComparator apps) (scr app) app
   where
     scr app = moveToWksp app >>= flip lookup (workspacesMapping apps)
 
@@ -500,7 +520,7 @@ moveToOwnWorkspace apps = do
   unlessH (matching || floating || isJust transient) $ do
       wksp <- liftX (windowWorkspace window)
       whenH (wksp `notElem` prohibitOwnWorkspaces apps) $
-          createAndMove True (lookup wksp $ workspacesMapping apps) wksp
+          createAndMove True (screensComparator apps) (lookup wksp $ workspacesMapping apps) wksp
 
 windowWorkspace :: Window -> X WorkspaceId
 windowWorkspace win = do
