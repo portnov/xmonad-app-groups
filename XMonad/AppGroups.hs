@@ -216,14 +216,12 @@ useAppGroupsConfig xcfg = do
 
 
 {-
-EDSL для описания групп приложений
-----------------------------------
+EDSL for describing application groups
+--------------------------------------
 
-Описывать группы приложений с использованием непосредственно конструктора +App+
-и record syntax длинно, неудобно и не наглядно. Поэтому ниже определяем набор
-комбинаторов для конструирования значений типа +App+.
-
-Начальное значение. Определяет только набор условий на окна.
+To describe application groups by direct use of the +App+ constructor and record syntax
+is too long, and not very clear. So here is some set of combinators for constructing
+values of +App+ type.
 -}
 
 -- | Initial value. Defines only window matching conditions.
@@ -282,7 +280,7 @@ handleDynamic app property = app {dynamicProperty = Just property}
 tag :: App -> String -> App
 tag app name = app {setTag = Just name}
 
--- Утилиты
+-- Utilities
 
 xineramaWorkspaceScreensMapping :: [[WorkspaceId]] -> [(WorkspaceId, ScreenId)]
 xineramaWorkspaceScreensMapping lists = concat $ zipWith toPairs lists [0..]
@@ -395,10 +393,10 @@ initializeAppGroups apps = do
   XS.put $ TagsMap m
 
 {-
-Список привязок сочетаний клавиш.
-Каждая комбинация клавиш будет переключать к одному из окон соответствующей
-группы (окна выбираются с помощью +X.A.GridSelect+), или запускать связанное
-с группой действие, если подходящих окон нет.
+List of key bindings.
+
+Each key binding will switch to one of windows of corresponding group (windows are selected with +X.A.GridSelect+, when selection is ambigous), or run corresponding action, if there are no matching windows.
+
 -}
 
 -- | Hotkeys list.
