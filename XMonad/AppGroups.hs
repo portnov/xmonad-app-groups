@@ -20,7 +20,7 @@ module XMonad.AppGroups
    apps2hooks, apps2keys,
    moveToOwnWorkspace,
    readConfig, useAppGroupsConfig,
-   selectAppGroup, switchToApp, selectWorkspaceOn,
+   selectAppGroup, switchToApp, switchToTag, selectWorkspaceOn,
    addTagToWindow, removeTagFromWindow, setTagsForWindow,
    addTagToWorkspace, addTagToWorkspace', removeTagFromWorkspace, setTagOnWorkspace,
    createWorkspaceForTag,
@@ -486,6 +486,14 @@ switchToApp apps name =
         [w] -> myFocus apps w
         _   -> selectOneWindow (windowsGSC apps) ws
     _     -> return ()
+
+switchToTag :: AppsConfig -> String -> X ()
+switchToTag apps tagName = do
+  ws <- matchingWindows (hasTagQ tagName)
+  case ws of
+    [] -> return ()
+    [w] -> myFocus apps w
+    _ -> selectOneWindow (windowsGSC apps) ws
 
 getWorkspaceTitlesAndNames :: X [(String, WorkspaceId)]
 getWorkspaceTitlesAndNames = do
