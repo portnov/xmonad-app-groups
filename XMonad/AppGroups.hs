@@ -23,7 +23,8 @@ module XMonad.AppGroups
    selectAppGroup, switchToApp, selectWorkspaceOn,
    addTagToWindow, removeTagFromWindow, setTagsForWindow,
    addTagToWorkspace, addTagToWorkspace', removeTagFromWorkspace, setTagOnWorkspace,
-   createWorkspaceForTag
+   createWorkspaceForTag,
+   hasTagQ
   ) where
 
 import Control.Monad
@@ -629,6 +630,10 @@ createWorkspaceForTag :: String -> X ()
 createWorkspaceForTag tagName = do
   addHiddenWorkspace tagName
   addTagToWorkspace' tagName tagName
+
+hasTagQ :: String -> Query Bool
+hasTagQ tagName =
+  liftX . Tag.hasTag tagName =<< ask
 
 copyHere :: Window -> X ()
 copyHere win = do
