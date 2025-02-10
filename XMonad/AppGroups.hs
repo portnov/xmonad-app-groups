@@ -251,7 +251,7 @@ orSpawn conds command = (group conds) {action = spawn command}
 
 -- | `Or run'. Analogous to @orSpawn@, but for any @X@ action.
 orRun :: Conds -> X () -> App
-orRun conds x = (group conds) {action = x} 
+orRun conds x = (group conds) {action = x}
 
 -- | Says that windows of this group are to be made fullscreen.
 full :: App -> App
@@ -314,7 +314,7 @@ appHook :: Maybe ScreenComparator -> Maybe ScreenId -> App -> MaybeManageHook
 appHook mbComparator mbSID app =
     query app -?> mconcat $ [
       whenH (makeFloat app)      doFloat,
-      whenH (makeFullscreen app) doFullscreen, 
+      whenH (makeFullscreen app) doFullscreen,
       whenJustH (appTag app) setTagForWindowH,
       whenJustH (moveToWksp app) (\mbWksp -> do
           alreadyThere <- isAlreadyThere
@@ -330,7 +330,7 @@ appHook mbComparator mbSID app =
           return $ tagName `elem` tags
 
 -- | Create new workspace and move current window to it.
-createAndMove :: Bool -> Maybe ScreenComparator -> (Maybe ScreenId) -> WorkspaceId -> ManageHook
+createAndMove :: Bool -> Maybe ScreenComparator -> Maybe ScreenId -> WorkspaceId -> ManageHook
 createAndMove jump mbComparator mbSid wksp = do
   liftX (addHiddenWorkspace wksp)
   mbActualSid <- case (mbComparator, mbSid) of
@@ -342,7 +342,7 @@ createAndMove jump mbComparator mbSid wksp = do
           (Nothing,  True)  -> W.view wksp
           (Just sid, False) -> onlyOnScreen sid wksp
           (Just sid, True)  -> viewOnScreen sid wksp
-          otherwise         -> id
+          _                 -> id
   w <- ask
   doF (switchScreen . W.shiftWin wksp w) :: ManageHook
 
@@ -357,7 +357,7 @@ groupName app
         | Just name <- shortName app  = name
         | Just wksp <- moveToWksp app = wksp
         | otherwise                   = "unknown"
- 
+
 appTag :: App -> Maybe String
 appTag app
   | Just tag <- setTag app = Just tag
@@ -366,7 +366,7 @@ appTag app
   | otherwise = Nothing
 
 apps2hooks' :: AppsConfig -> [App] -> [MaybeManageHook]
-apps2hooks' apps lst = map (appHookWithScreen apps) lst
+apps2hooks' apps = map (appHookWithScreen apps)
 
 apps2hooks :: AppsConfig -> [MaybeManageHook]
 apps2hooks apps = apps2hooks' apps (appsList apps)
@@ -424,7 +424,7 @@ apps2keys apps = concatMap getHotkey (appsList apps)
 
 isVisible :: Window -> X Bool
 isVisible w =  withWindowSet $ \ws -> do
-    let maybeStacks = map W.stack $ map W.workspace $ W.screens ws
+    let maybeStacks = map (W.stack . W.workspace) (W.screens ws)
     return $ any good maybeStacks
   where good Nothing              = False
         good (Just (W.Stack t l r)) = w `elem` (t: l ++ r)
@@ -477,7 +477,7 @@ selectAppGroup apps = do
     isNotEmpty group = (not . null) `fmap` matchingWindows (query group)
 
 switchToApp :: AppsConfig -> String -> X ()
-switchToApp apps name = 
+switchToApp apps name =
   case filter (\a -> groupName a == name) (appsList apps) of
     [app] -> do
       ws <- matchingWindows (query app)
@@ -582,7 +582,7 @@ removeTagFromWorkspace tagName = do
         in  if S.null ws'
               then Nothing
               else Just ws'
-      m' = M.update up tagName m 
+      m' = M.update up tagName m
   XS.put $ TagsMap m'
   Tag.withTagged tagName killCurrentCopy
 
@@ -591,7 +591,7 @@ setTagOnWorkspace tagName = do
   wksp <- gets (W.tag . W.workspace . W.current . windowset)
   oldTags <- getTagsByWorkspace wksp
   TagsMap m <- XS.get
-  let up t ws 
+  let up t ws
         | t == tagName = S.insert wksp ws
         | otherwise    = S.delete wksp ws
       m' = M.mapWithKey up m
@@ -664,7 +664,7 @@ killCopies :: Window -> S.Set WorkspaceId -> X ()
 killCopies win wkspIds = do
     ws <- gets windowset
     if W.member win $ delete' ws
-      then windows delete' 
+      then windows delete'
       else minimizeWindow win
   where
     delete' = W.mapWorkspace $ \wksp ->
